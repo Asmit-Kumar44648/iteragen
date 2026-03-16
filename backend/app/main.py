@@ -7,11 +7,12 @@ from app.api.molecules import router as molecules_router
 from app.api.simulation import router as simulation_router
 from app.api.agent import router as agent_router
 from app.api.rag import router as rag_router
+from app.api.jobs import router as jobs_router
 
 app = FastAPI(
     title="Iteragen API",
     description="AI-driven drug discovery platform",
-    version="0.6.0"
+    version="0.7.0"
 )
 
 app.add_middleware(
@@ -29,10 +30,11 @@ app.include_router(molecules_router)
 app.include_router(simulation_router)
 app.include_router(agent_router)
 app.include_router(rag_router)
+app.include_router(jobs_router)
 
 @app.get("/")
 def root():
-    return {"status": "Iteragen API running", "version": "0.6.0"}
+    return {"status": "Iteragen API running", "version": "0.7.0"}
 
 @app.get("/health")
 def health():
