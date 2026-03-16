@@ -2,6 +2,7 @@ import json
 from groq import Groq
 from app.core.config import GROQ_API_KEY
 from app.core.database import supabase
+from app.services.rag import build_rag_context
 
 client = Groq(api_key=GROQ_API_KEY)
 
@@ -20,6 +21,7 @@ Rules you never break:
 - Always state confidence level (high/medium/low)
 - Always remind that results need wet lab validation
 - If you are uncertain, say so explicitly
+- Only cite papers that appear in the provided literature context
 
 Output format: Always respond in valid JSON only. No prose outside JSON."""
 
@@ -39,12 +41,20 @@ async def generate_hypothesis(
     disease: str,
     pdb_id: str
 ) -> dict:
+    literature_context = await build_rag_context(
+        f"{target_protein} {disease} inhibitor binding mechanism",
+        limit=3
+    )
+
     prompt = f"""
-Generate an initial drug discovery hypothesis for this target:
+Generate an initial drug discovery hypothesis for this target.
 
 Target protein: {target_protein}
 Disease: {disease}
 PDB ID: {pdb_id}
+
+Supporting literature:
+{literature_context}
 
 Respond in this exact JSON format:
 {{
@@ -54,7 +64,9 @@ Respond in this exact JSON format:
   "molecule_classes_to_test": ["class1", "class2"],
   "confidence": "low|medium|high",
   "reasoning": "brief scientific reasoning",
-  "search_terms": ["term1", "term2", "term3"]
+  "citations": ["PMID if mentioned in literature above, else empty"],
+  "search_terms": ["term1", "term2", "term3"],
+  "literature_grounded": true
 }}"""
 
     response = client.chat.completions.create(
@@ -78,13 +90,15 @@ Respond in this exact JSON format:
             "molecule_classes_to_test": ["kinase inhibitors", "small molecule drugs"],
             "confidence": "medium",
             "reasoning": "Standard approach for kinase targets",
-            "search_terms": [target_protein, disease, "inhibitor"]
+            "citations": [],
+            "search_terms": [target_protein, disease, "inhibitor"],
+            "literature_grounded": False
         }
 
     await log_agent_thought(
         experiment_id,
         "hypothesis",
-        f"Initial hypothesis: {result.get('hypothesis')} | Confidence: {result.get('confidence')}"
+        f"Hypothesis: {result.get('hypothesis')} | Citations: {result.get('citations')} | Grounded: {result.get('literature_grounded')}"
     )
     return result
 
@@ -106,23 +120,33 @@ async def analyze_docking_results(
             "mw": r.get("molecular_weight")
         })
 
+    top_mol = top_results[0].get("molecule_name", "") if top_results else ""
+    literature_context = await build_rag_context(
+        f"{top_mol} {target_protein} binding affinity mechanism",
+        limit=2
+    )
+
     prompt = f"""
-Analyze these docking results for iteration {iteration}:
+Analyze these docking results for iteration {iteration}.
 
 Target: {target_protein} ({disease})
 Results: {json.dumps(results_summary, indent=2)}
+
+Supporting literature:
+{literature_context}
 
 Respond in this exact JSON format:
 {{
   "analysis": "brief analysis of results",
   "top_candidate": "molecule name",
-  "top_candidate_reason": "why this is the best candidate",
-  "mechanism_hypothesis": "proposed binding mechanism for top candidate",
+  "top_candidate_reason": "why this is best",
+  "mechanism_hypothesis": "proposed binding mechanism",
   "next_steps": ["step1", "step2"],
-  "molecules_to_explore_next": ["molecule_class_or_name1", "molecule_class_or_name2"],
+  "molecules_to_explore_next": ["name1", "name2"],
   "confidence": "low|medium|high",
   "iteration_verdict": "promising|neutral|disappointing",
-  "warning": "any concerns about the results"
+  "citations": ["PMID if in literature above"],
+  "warning": "any concerns"
 }}"""
 
     response = client.chat.completions.create(
@@ -141,21 +165,22 @@ Respond in this exact JSON format:
     except:
         top = top_results[0] if top_results else {}
         result = {
-            "analysis": f"Analyzed {len(results)} compounds. Top binder identified.",
+            "analysis": f"Analyzed {len(results)} compounds.",
             "top_candidate": top.get("molecule_name", "unknown"),
             "top_candidate_reason": f"Best binding affinity at {top.get('binding_affinity')} kcal/mol",
             "mechanism_hypothesis": "Competitive inhibition at active site",
-            "next_steps": ["validate in cell assay", "explore scaffold variations"],
-            "molecules_to_explore_next": ["similar scaffolds", "analogs"],
+            "next_steps": ["validate in cell assay", "explore analogs"],
+            "molecules_to_explore_next": ["similar scaffolds"],
             "confidence": "medium",
             "iteration_verdict": "promising",
+            "citations": [],
             "warning": "All results require experimental validation"
         }
 
     await log_agent_thought(
         experiment_id,
         "result",
-        f"Iteration {iteration} analysis: {result.get('analysis')} | Top: {result.get('top_candidate')} | Verdict: {result.get('iteration_verdict')}"
+        f"Iteration {iteration}: {result.get('analysis')} | Top: {result.get('top_candidate')} | Verdict: {result.get('iteration_verdict')}"
     )
     return result
 
@@ -178,26 +203,35 @@ async def generate_final_report(
         for i, r in enumerate(top_5)
     ]
 
+    literature_context = await build_rag_context(
+        f"{target_protein} {disease} drug candidate therapeutic",
+        limit=3
+    )
+
     prompt = f"""
-Generate a final research report for this drug discovery experiment:
+Generate a final research report.
 
 Target: {target_protein}
 Disease: {disease}
-Total compounds screened: {len(all_results)}
+Total screened: {len(all_results)}
 Top candidates: {json.dumps(top_summary, indent=2)}
 Initial hypothesis: {hypothesis.get('hypothesis')}
+
+Supporting literature:
+{literature_context}
 
 Respond in this exact JSON format:
 {{
   "executive_summary": "2-3 sentence summary",
   "top_candidate": "best molecule name",
-  "top_candidate_score": "binding affinity value",
+  "top_candidate_score": "binding affinity",
   "proposed_mechanism": "detailed mechanism",
   "key_findings": ["finding1", "finding2", "finding3"],
   "recommended_next_experiments": ["experiment1", "experiment2"],
   "limitations": ["limitation1", "limitation2"],
+  "citations": ["PMID if in literature above"],
   "confidence_overall": "low|medium|high",
-  "disclaimer": "standard research use only disclaimer"
+  "disclaimer": "For research use only. All results require wet lab validation."
 }}"""
 
     response = client.chat.completions.create(
@@ -216,33 +250,22 @@ Respond in this exact JSON format:
     except:
         top = top_5[0] if top_5 else {}
         result = {
-            "executive_summary": f"Screened {len(all_results)} compounds against {target_protein}. {top.get('molecule_name')} emerged as top candidate.",
+            "executive_summary": f"Screened {len(all_results)} compounds against {target_protein}.",
             "top_candidate": top.get("molecule_name", "unknown"),
             "top_candidate_score": str(top.get("binding_affinity", "N/A")),
             "proposed_mechanism": "Competitive inhibition at primary binding site",
-            "key_findings": [
-                f"Top binding affinity: {top.get('binding_affinity')} kcal/mol",
-                "ADMET screening eliminated high-toxicity candidates",
-                "Results consistent with known inhibitor profiles"
-            ],
-            "recommended_next_experiments": [
-                "In vitro cell viability assay",
-                "Western blot for target inhibition",
-                "Dose-response curve"
-            ],
-            "limitations": [
-                "All scores are in silico predictions",
-                "Protein flexibility not fully modeled",
-                "Requires experimental validation"
-            ],
+            "key_findings": [f"Top binding: {top.get('binding_affinity')} kcal/mol"],
+            "recommended_next_experiments": ["In vitro cell assay", "Western blot"],
+            "limitations": ["In silico predictions only", "Requires wet lab validation"],
+            "citations": [],
             "confidence_overall": "medium",
-            "disclaimer": "Research use only. All results require wet lab validation before any conclusions can be drawn."
+            "disclaimer": "For research use only. All results require wet lab validation."
         }
 
     await log_agent_thought(
         experiment_id,
         "result",
-        f"Final report generated. Top candidate: {result.get('top_candidate')}. {result.get('executive_summary')}"
+        f"Final report: Top candidate: {result.get('top_candidate')}. {result.get('executive_summary')}"
     )
     return result
 
@@ -254,13 +277,13 @@ async def think_next_step(
 ) -> str:
     prompt = f"""
 Current iteration: {iteration}/{total_iterations}
-Current best molecule: {current_best.get('molecule_name')}
-Current best score: {current_best.get('binding_affinity')} kcal/mol
+Current best: {current_best.get('molecule_name')}
+Score: {current_best.get('binding_affinity')} kcal/mol
 
-What should the agent focus on next? Respond in JSON:
+Respond in JSON:
 {{
-  "next_action": "brief description of next step",
-  "reasoning": "why this makes sense scientifically"
+  "next_action": "brief next step",
+  "reasoning": "scientific reasoning"
 }}"""
 
     response = client.chat.completions.create(
