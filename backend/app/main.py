@@ -1,10 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.api.auth import router as auth_router
+from app.api.experiments import router as experiments_router
 
 app = FastAPI(
     title="Iteragen API",
     description="AI-driven drug discovery platform",
-    version="0.1.0"
+    version="0.2.0"
 )
 
 app.add_middleware(
@@ -15,9 +17,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
+app.include_router(experiments_router)
+
 @app.get("/")
 def root():
-    return {"status": "Iteragen API running", "version": "0.1.0"}
+    return {"status": "Iteragen API running", "version": "0.2.0"}
 
 @app.get("/health")
 def health():
