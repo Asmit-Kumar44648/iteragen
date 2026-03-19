@@ -12,12 +12,16 @@ from app.api.jobs import router as jobs_router
 app = FastAPI(
     title="Iteragen API",
     description="AI-driven drug discovery platform",
-    version="0.7.0"
+    version="0.8.0"
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://iteragen.netlify.app",
+        "https://*.netlify.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,7 +38,7 @@ app.include_router(jobs_router)
 
 @app.get("/")
 def root():
-    return {"status": "Iteragen API running", "version": "0.7.0"}
+    return {"status": "Iteragen API running", "version": "0.8.0"}
 
 @app.get("/health")
 def health():
